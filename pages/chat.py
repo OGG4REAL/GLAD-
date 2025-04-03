@@ -123,10 +123,8 @@ class ChatUI:
             portfolio = config.get('portfolio', {})
             if portfolio.get('assets') and portfolio.get('weights'):
                 st.write("\n📈 当前投资组合:")
-                total_amount = sum(portfolio['weights'])
                 for asset, weight in zip(portfolio['assets'], portfolio['weights']):
-                    percentage = (weight / total_amount) * 100 if total_amount > 0 else 0
-                    st.write(f"- {asset}: {self.format_amount(weight)} ({percentage:.1f}%)")
+                    st.write(f"- {asset}: {weight*100:.1f}%")
         
         # 显示对话历史
         for message in st.session_state.messages:
@@ -147,4 +145,4 @@ def main():
     chat_ui.render()
 
 if __name__ == "__main__":
-    main() 
+    main()
