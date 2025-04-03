@@ -72,4 +72,4 @@ class RiskAssessmentManager:
     def reset(self) -> None:
         """重置评估状态"""
         self.current_question_index = 0
-        self.total_score = 0 
+        self.total_score = 0
