@@ -14,8 +14,8 @@ class RiskProfile:
 
 @dataclass
 class Portfolio:
-    assets: List[str] = field(default_factory=list)
-    weights: List[float] = field(default_factory=list)
+    assets: Optional[List[str]] = None
+    weights: Optional[List[float]] = None
 
 @dataclass
 class PersonalInfo:
@@ -53,7 +53,9 @@ class ConfigManager:
         return all([
             self.core_investment.target_value is not None,
             self.core_investment.years is not None,
-            self.core_investment.initial_investment is not None
+            self.core_investment.initial_investment is not None,
+            self.portfolio.assets is not None and len(self.portfolio.assets) > 0,
+            self.portfolio.weights is not None and len(self.portfolio.weights) > 0
         ])
     
     def get_missing_core_info(self) -> List[str]:
@@ -65,6 +67,10 @@ class ConfigManager:
             missing.append("years")
         if self.core_investment.initial_investment is None:
             missing.append("initial_investment")
+        if self.portfolio.assets is None or len(self.portfolio.assets) == 0:
+            missing.append("portfolio_assets")
+        if self.portfolio.weights is None or len(self.portfolio.weights) == 0:
+            missing.append("portfolio_weights")
         return missing
     
     def get_missing_user_info(self) -> Dict[str, List[str]]:
@@ -140,4 +146,4 @@ class ConfigManager:
                     for field in FinancialInfo.__dataclass_fields__
                 }
             }
-        } 
+        }
