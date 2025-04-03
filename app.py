@@ -45,4 +45,4 @@ st.write("""
 # 显示版本信息
 st.sidebar.markdown("---")
 st.sidebar.write("Version: 1.0.0")
-st.sidebar.write("© 2024 GLAD Investment. All rights reserved.") 
+st.sidebar.write("© 2024 GLAD Investment. All rights reserved.")
