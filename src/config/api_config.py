@@ -1,13 +1,7 @@
 """API配置文件"""
-import os
-from dotenv import load_dotenv
 
-# 加载环境变量
-load_dotenv()
-
-# API 配置
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_API_BASE = os.getenv("OPENAI_API_BASE", "https://api.deepseek.com/v1")
+OPENAI_API_KEY = "your-api-key-here"  # 请替换为您的 API 密钥
+OPENAI_API_BASE = "https://api.deepseek.com/v1"
 
 # LLM 配置
 DEFAULT_MODEL = "deepseek-chat"  # 使用 deepseek 的聊天模型
