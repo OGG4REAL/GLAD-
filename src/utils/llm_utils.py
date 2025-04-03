@@ -122,4 +122,4 @@ class LLMUtils:
                 if attempt == max_retries - 1:
                     raise e
                 print(f"重试 LLM 调用 (尝试 {attempt + 1}/{max_retries})")
-                await asyncio.sleep(RETRY_INTERVAL) 
+                await asyncio.sleep(RETRY_INTERVAL)
