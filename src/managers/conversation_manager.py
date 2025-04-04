@@ -48,55 +48,6 @@ class ConversationManager:
         print(f"用户输入: {user_input}")
         print(f"当前状态: {self.state_manager.current_state.value}")
         
-        # 优先检查是否包含投资相关信息
-        investment_pattern = r'([0-9]+[万亿]|[0-9]+\s*年|目标|计划投资|买房|理财|投资|基金|股票|债券)'
-        if re.search(investment_pattern, user_input):
-            print("检测到投资相关信息，将意图设置为 provide_info")
-            try:
-                # 调用 LLM 进行分析
-                prompt = self._build_analysis_prompt(user_input)
-                print("\n调用 LLM 进行分析...")
-                
-                response = await LLMUtils.call_llm(
-                    prompt=prompt,
-                    temperature=0.2
-                )
-                
-                # 提取 JSON 结果
-                analysis_result = LLMUtils.extract_json_from_response(response["text"])
-                if not analysis_result:
-                    raise ValueError("无法解析 LLM 响应中的 JSON 数据")
-                
-                # 强制设置意图为 provide_info
-                analysis_result["intent"] = "provide_info"
-                
-                print("\n分析结果:")
-                print(json.dumps(analysis_result, ensure_ascii=False, indent=2))
-                
-                return analysis_result
-            except Exception as e:
-                print(f"\n❌ 分析用户输入时出错: {str(e)}")
-                # 即使出错也返回 provide_info 意图
-                return {
-                    "intent": "provide_info",
-                    "emotion": "neutral",
-                    "extracted_info": {},
-                    "requires_immediate_response": True
-                }
-        
-        # 如果没有检测到投资相关信息，且在自由问答状态，返回简化分析
-        if self.state_manager.current_state == ConversationState.FREE_CHAT:
-            print("当前处于自由问答状态，返回简化的分析结果")
-            return {
-                "intent": "ask_question",
-                "emotion": "neutral",
-                "question_info": {
-                    "type": "general",
-                    "original_question": user_input,
-                    "requires_immediate_response": True
-                    }
-                }
-        
         try:
             # 调用 LLM 进行分析
             prompt = self._build_analysis_prompt(user_input)
@@ -118,14 +69,9 @@ class ConversationManager:
             return analysis_result
             
         except Exception as e:
-            print(f"\n❌ 分析用户输入时出错:")
-            print(f"错误类型: {type(e).__name__}")
-            print(f"错误信息: {str(e)}")
-            print("错误堆栈:")
-            import traceback
-            print(traceback.format_exc())
+            print(f"\n❌ 分析用户输入时出错: {str(e)}")
             return {
-                "intent": "unknown",
+                "intent": "provide_info",
                 "emotion": "neutral",
                 "extracted_info": {},
                 "requires_immediate_response": True
@@ -521,13 +467,9 @@ class ConversationManager:
         print("用户输入:", user_input)
         
         try:
-            # 1. 分析用户输入
-            print("\n1. 分析用户输入...")
-            analysis = await self.analyze_input(user_input)
-            
-            # 2. 检测并更新状态
-            print("\n2. 检测对话状态...")
-            new_state = await self._detect_state(user_input, analysis)
+            # 1. 优先检测状态
+            print("\n1. 检测对话状态...")
+            new_state = await self._detect_state(user_input, {})
             if new_state and new_state != self.state_manager.current_state:
                 print(f"状态需要从 {self.state_manager.current_state.value} 切换到 {new_state.value}")
                 if self.state_manager.can_transition_to(new_state):
@@ -535,6 +477,24 @@ class ConversationManager:
                     self.state_manager.transition_to(new_state)
                 else:
                     print(f"无法切换到 {new_state.value} 状态")
+            
+            # 2. 根据状态决定是否需要详细分析
+            print("\n2. 根据状态进行分析...")
+            analysis = {}
+            if self.state_manager.current_state == ConversationState.COLLECTING_INFO:
+                # 只有在收集信息状态才进行详细分析
+                analysis = await self.analyze_input(user_input)
+            else:
+                # 自由问答状态使用简化分析
+                analysis = {
+                    "intent": "ask_question",
+                    "emotion": "neutral",
+                    "question_info": {
+                        "type": "general",
+                        "original_question": user_input,
+                        "requires_immediate_response": True
+                    }
+                }
             
             # 3. 生成回复
             print("\n3. 生成回复...")
@@ -575,12 +535,25 @@ class ConversationManager:
         print(f"当前状态: {self.state_manager.current_state.value}")
         
         # 优先使用规则检测
-        # 如果用户输入包含投资相关信息，切换到信息收集状态
-        investment_pattern = r'([0-9]+[万亿]|[0-9]+\s*年|目标|计划投资|买房|理财|投资|基金|股票|债券)'
-        if re.search(investment_pattern, user_input):
-            print("检测到投资相关信息，切换到信息收集状态")
+        # 1. 明确的个人投资意图模式
+        personal_investment_pattern = r'(我.*(想|要|准备|计划).*(投资|理财|买入)|准备.*([0-9]+[万亿]|[0-9]+\s*年)|我的.*投资)'
+        if re.search(personal_investment_pattern, user_input):
+            print("检测到明确的个人投资意图，切换到信息收集状态")
             return ConversationState.COLLECTING_INFO
-        
+            
+        # 2. 明确的咨询分析请求
+        analysis_pattern = r'(帮我*分析|怎么样|如何|分析下|看看)'
+        if re.search(analysis_pattern, user_input) and re.search(r'(股票|基金|债券|理财产品)', user_input):
+            print("检测到投资咨询请求，保持自由问答状态")
+            return ConversationState.FREE_CHAT
+
+        # 3. 其他投资相关信息，交给 LLM 进行更细致的判断
+        investment_pattern = r'([0-9]+[万亿]|[0-9]+\s*年|目标|买房|理财|投资|基金|股票|债券)'
+        if re.search(investment_pattern, user_input):
+            print("检测到投资相关信息，需要进一步判断")
+            # 继续执行后续的 LLM 判断逻辑
+            return None
+
         # 获取最近的对话历史
         context = self.state_manager.get_recent_context()
         context_str = ""
