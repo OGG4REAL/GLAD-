@@ -115,4 +115,4 @@ class StateManager:
         # 如果连续提问次数过多，或者刚刚问过问题，则不适合继续提问
         return (self.context.consecutive_questions < 3 and 
                 len(self.context.history) > 0 and 
-                self.context.history[-1]["role"] == "user")
+                self.context.history[-1]["role"] == "user") 
