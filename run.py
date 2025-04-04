@@ -1,12 +1,11 @@
 import sys
 import os
-import asyncio
 
-# Add the project root directory to the Python path
-project_root = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(project_root)
+# 添加项目根目录到 Python 路径
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.main import main
+import asyncio
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main()) 
