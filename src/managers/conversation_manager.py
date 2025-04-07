@@ -553,7 +553,7 @@ class ConversationManager:
             return ConversationState.FREE_CHAT
             
         # 3. 检查是否是个人投资相关
-        personal_investment_pattern = r'(我.*(想|要|准备|计划).*(投资|理财|买入)|准备.*([0-9]+[万亿]|[0-9]+\s*年)|我的.*投资)'
+        personal_investment_pattern = r'(我.*(想|要|准备|计划|考虑|打算).*(投资|理财|买入|买房|保险|保障|退休|养老|传承|教育|留学|慈善)|准备.*([0-9]+[万亿]|[0-9]+\s*年)|我.*需要.*[0-9]+[万亿]|我的.*(投资|保险|基金|资产|理财|退休金|养老金|教育金))'
         if re.search(personal_investment_pattern, user_input):
             print("检测到明确的个人投资意图，切换到信息收集状态")
             return ConversationState.COLLECTING_INFO
