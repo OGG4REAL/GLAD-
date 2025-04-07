@@ -1,6 +1,7 @@
 import streamlit as st
 import json
 from pathlib import Path
+import os
 from typing import Dict, Optional
 
 class RiskAssessmentUI:
@@ -10,12 +11,32 @@ class RiskAssessmentUI:
     
     def load_questions(self) -> list:
         """加载风险评估问题"""
-        questions_path = Path(__file__).parent.parent / "risk_question.json"
         try:
-            with open(questions_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
+            # 尝试多个可能的路径
+            possible_paths = [
+                Path(__file__).parent.parent / "risk_question.json",  # 相对于当前文件的路径
+                Path.cwd() / "risk_question.json",  # 相对于当前工作目录的路径
+                Path(os.path.dirname(os.path.abspath(__file__))).parent / "risk_question.json"  # 使用绝对路径
+            ]
+            
+            for path in possible_paths:
+                if path.exists():
+                    with open(path, 'r', encoding='utf-8') as f:
+                        questions = json.load(f)
+                        print(f"成功从路径加载问题: {path}")
+                        return questions
+            
+            # 如果所有路径都失败，尝试直接从streamlit的运行目录加载
+            with open("risk_question.json", 'r', encoding='utf-8') as f:
+                questions = json.load(f)
+                print("成功从当前目录加载问题")
+                return questions
+                
         except Exception as e:
             st.error(f"加载风险评估问题时出错: {str(e)}")
+            print(f"错误详情: {str(e)}")
+            print(f"当前工作目录: {os.getcwd()}")
+            print(f"尝试的路径: {[str(p) for p in possible_paths]}")
             return []
     
     def init_session_state(self):
