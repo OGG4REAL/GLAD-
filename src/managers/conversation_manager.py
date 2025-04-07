@@ -9,18 +9,19 @@ class ConversationManager:
     def __init__(self, config_manager: ConfigManager, state_manager: StateManager):
         self.config_manager = config_manager
         self.state_manager = state_manager
-        # 设置初始状态为信息收集
-        self.state_manager.transition_to(ConversationState.COLLECTING_INFO)
+        # 不再在初始化时强制转换状态
         self.collection_stages = {
             'core_info': {
                 'fields': ['target_value', 'years', 'initial_investment'],
                 'completed': False,
-                'modifiable': True
+                'modifiable': True,
+                'required': True
             },
             'portfolio': {
                 'fields': ['assets', 'weights'],
                 'completed': False,
-                'modifiable': True
+                'modifiable': True,
+                'required': True
             },
             'additional_info': {
                 'fields': [
@@ -32,6 +33,7 @@ class ConversationManager:
                 ],
                 'completed': False,
                 'modifiable': True,
+                'required': False,
                 'optional': True  # 标记为可选
             }
         }
@@ -40,6 +42,14 @@ class ConversationManager:
             'years': ['年限', '时间', '期限'],
             'initial_investment': ['初始投资', '本金', '起始资金'],
             'portfolio': ['资产配置', '投资组合', '配置']
+        }
+        # 初始化状态转换处理器
+        self.state_handlers = {
+            ConversationState.INITIALIZING: self._handle_initializing_state,
+            ConversationState.COLLECTING_INFO: self._handle_collecting_info_state,
+            ConversationState.FREE_CHAT: self._handle_free_chat_state,
+            ConversationState.RISK_ASSESSMENT: self._handle_risk_assessment_state,
+            ConversationState.PORTFOLIO_PLANNING: self._handle_portfolio_planning_state
         }
         
     async def analyze_input(self, user_input: str) -> Dict:
@@ -165,15 +175,13 @@ class ConversationManager:
         
         # 获取缺失的信息
         missing_core = self.config_manager.get_missing_core_info()
-        missing_user = self.config_manager.get_missing_user_info()
         
-        # 格式化对话历史
+        # 格式化对话历史 - 只保留最近两轮
         context_str = ""
         if context:
             context_str = "\n".join([
-                f"{msg.get('role', 'unknown')}: {msg.get('content', '')} "
-                f"(状态: {msg.get('state', 'unknown')})"
-                for msg in context
+                f"{msg.get('role', 'unknown')}: {msg.get('content', '')}"
+                for msg in context[-4:]  # 只保留最近2轮对话
             ])
         
         # 获取当前已知信息
@@ -183,119 +191,84 @@ class ConversationManager:
             "initial_investment": core_investment.get('initial_investment')
         }
         
-        # 获取当前投资组合
+        # 获取当前投资组合 - 简化显示
         portfolio = config.get('portfolio', {})
         portfolio_str = ""
         if portfolio.get('assets') and portfolio.get('weights'):
-            portfolio_str = "\n当前投资组合："
-            for asset, weight in zip(portfolio['assets'], portfolio['weights']):
-                portfolio_str += f"\n- {asset}: {weight*100:.1f}%"
-        
-        prompt = f"""作为一个专业的投资顾问，请分析用户的输入并提取关键信息。
+            portfolio_str = "当前投资组合：" + "、".join(
+                f"{asset}({weight*100:.0f}%)"
+                for asset, weight in zip(portfolio['assets'], portfolio['weights'])
+            )
+
+        prompt = f"""作为投资顾问，分析用户输入并提取关键信息。
 
 用户输入："{user_input}"
 
-当前状态：
-- 对话阶段：{self.state_manager.current_state.value}
-- 缺失的核心信息：{missing_core}
-- 当前关注点：{self.state_manager.context.current_focus}
+当前状态：{self.state_manager.current_state.value}
+缺失信息：{missing_core}
+当前焦点：{self.state_manager.context.current_focus}
 
-当前已知信息：
-- 目标金额：{self._format_amount(current_info['target_value'])}
-- 投资年限：{f"{current_info['years']}年" if current_info['years'] is not None else '未知'}
-- 初始投资：{self._format_amount(current_info['initial_investment'])}
+已知信息：
+目标金额：{self._format_amount(current_info['target_value'])}
+投资年限：{f"{current_info['years']}年" if current_info['years'] is not None else '未知'}
+初始投资：{self._format_amount(current_info['initial_investment'])}
 {portfolio_str}
 
-最近的对话历史：
+最近对话：
 {context_str}
 
-请仔细分析用户输入中的信息，特别注意：
-
-1. 金额相关表述：
-   - 直接金额："20万"、"一百万"等
-   - 相对金额："翻一倍"、"增长到原来的3倍"等
-   - 增长表述："增长100%"、"收益率100%"等
-   - 如果提到相对金额或增长，且已知初始投资，请计算出具体金额
-
-2. 时间相关表述：
-   - 具体年限："5年"、"三年"等
-   - 时间点："2030年"、"三年后"等
-   - 模糊表述："中期"、"长期"等（中期约3-5年，长期约5-10年）
-
-3. 投资目的相关表述：
-   - 具体目标："买房"、"子女教育"、"退休"等
-   - 模糊表述："保值增值"、"理财"等
-   - 复合目标："既要养老又要给孩子攒教育基金"等
-
-4. 投资组合相关表述：
-   - 具体配置："股票60%，债券40%"等
-   - 风格偏好："稳健型"、"激进型"等
-   - 具体产品："股票型基金"、"债券基金"等
-   - 明确表示无投资组合的表述：
-     * "没有投资组合"
-     * "没有"（在询问投资组合时的回答）
-     * "全部是现金"
-     * "都在银行"等
-
-如果用户明确表示没有投资组合，请在 reasoning.portfolio_parsing 中说明"用户明确表示没有投资组合"，并在 extracted_info.portfolio 中设置：
+请分析并返回JSON：
 {{
-    "assets": ["cash"],
-    "weights": [1.0]
-}}
-
-请返回以下 JSON 格式的分析结果：
-{{
-    "intent": "string",  // 意图类型：provide_info/ask_question/chat/other
-    "emotion": "string", // 情绪状态：positive/negative/neutral
-    "patience_level": "string",  // 耐心程度：high/medium/low
+    "intent": "provide_info/ask_question/chat/other",
+    "emotion": "positive/negative/neutral",
+    "patience_level": "high/medium/low",
     "extracted_info": {{
-        "core_investment": {{  // 核心投资信息（所有金额必须转换为数字）
-            "target_value": {current_info['target_value']},  // 目标金额（例如：'500万' -> 5000000）
-            "years": {current_info['years']},         // 投资年限（例如：'5年' -> 5）
-            "initial_investment": {current_info['initial_investment']}  // 初始资金（例如：'100万' -> 1000000）
+        "core_investment": {{
+            "target_value": null,
+            "years": null,
+            "initial_investment": null
         }},
-        "personal_info": {{  // 个人信息
-            "family_status": null,  // 家庭状况
-            "employment": null,     // 就业状况
-            "wealth_source": null,  // 财富来源
-            "investment_goal": null // 投资目标/目的
+        "personal_info": {{
+            "family_status": null,
+            "employment": null,
+            "wealth_source": null,
+            "investment_goal": null
         }},
-        "financial_info": {{  // 财务信息（所有金额必须转换为数字）
-            "cash_deposits": null,    // 现金存款
-            "investments": null,      // 其他投资
-            "employee_benefits": null, // 员工福利
-            "private_ownership": null, // 私人资产
-            "life_insurance": null,    // 人寿保险
-            "consumer_debt": null,     // 消费贷款
-            "mortgage": null,          // 房贷
-            "other_debt": null,        // 其他债务
-            "account_debt": null       // 账户负债
+        "financial_info": {{
+            "cash_deposits": null,
+            "investments": null,
+            "employee_benefits": null,
+            "private_ownership": null,
+            "life_insurance": null,
+            "consumer_debt": null,
+            "mortgage": null,
+            "other_debt": null,
+            "account_debt": null
         }},
-        "portfolio": {{  // 投资组合信息
-            "assets": {json.dumps(portfolio.get('assets', []))},    // 资产类别列表
-            "weights": {json.dumps(portfolio.get('weights', []))}    // 对应比例列表（百分比必须转换为小数，例如：'50%' -> 0.5）
+        "portfolio": {{
+            "assets": [],
+            "weights": []
         }}
     }},
-    "question_info": {{  // 如果是提问
-        "type": "string",  // 问题类型
-        "requires_immediate_response": boolean,  // 是否需要立即回答
-        "can_collect_info": boolean  // 是否可以借机收集信息
+    "question_info": {{
+        "type": "string",
+        "requires_immediate_response": true/false,
+        "can_collect_info": true/false
     }},
-    "reasoning": {{  // 推理过程
-        "amount_calculation": string,  // 如何得出金额的计算过程
-        "time_interpretation": string, // 如何解释时间相关表述
-        "goal_understanding": string,  // 如何理解投资目的
-        "portfolio_parsing": string    // 如何解析投资组合信息
+    "reasoning": {{
+        "amount_calculation": "",
+        "time_interpretation": "",
+        "goal_understanding": "",
+        "portfolio_parsing": ""
     }}
 }}
 
-注意事项：
-1. 所有金额必须转换为数字（例如：'500万' -> 5000000）
-2. 所有年限必须转换为数字（例如：'5年' -> 5）
-3. 所有百分比必须转换为小数（例如：'50%' -> 0.5）
-4. 如果提取到多个可能的值，选择最后提到的或最明确的值
-5. 只提取明确提到的信息，不要推测
-6. 如果用户表述模糊，在 reasoning 字段中说明解释过程"""
+注意：
+1. 金额必须转为数字（如：'500万' -> 5000000）
+2. 年限必须转为数字（如：'5年' -> 5）
+3. 百分比必须转为小数（如：'50%' -> 0.5）
+4. 只提取明确提到的信息
+5. 用户明确表示无投资组合时，设置 portfolio 为 {{"assets": ["cash"], "weights": [1.0]}}"""
         
         return prompt
     
@@ -320,43 +293,75 @@ class ConversationManager:
         # 如果用户提出问题
         if analysis.get("intent") == "ask_question":
             print("\n检测到用户提问...")
-            # 如果当前是收集信息状态，不要切换到自由问答
-            if self.state_manager.current_state == ConversationState.COLLECTING_CORE_INFO:
-                print("保持在收集信息状态")
-                return {
-                    "primary_goal": "collect_core_info",
-                    "secondary_goal": "maintain_engagement",
-                    "approach": "informative",
-                    "next_action": "ask_for_initial_investment",
-                    "allow_free_chat": False
-                }
+            question_info = analysis.get("question_info", {})
             
-            # 其他状态下可以切换到自由问答
-            if self.state_manager.current_state != ConversationState.FREE_CHAT:
-                print("尝试转换到自由问答状态...")
-                if self.state_manager.can_transition_to(ConversationState.FREE_CHAT):
-                    print("转换成功")
-                    self.state_manager.transition_to(ConversationState.FREE_CHAT)
-                else:
-                    print("转换失败")
-            else:
-                print("已经在自由问答状态")
-            
+            # 检查是否是纯知识咨询
+            if question_info.get("type") == "general_inquiry" and \
+               not question_info.get("can_collect_info", True):
+                print("检测到纯知识咨询问题")
                 return {
                     "primary_goal": "answer_question",
                     "secondary_goal": "maintain_engagement",
                     "approach": "informative",
                     "next_action": "provide_answer",
                     "allow_free_chat": True,
-                "question_type": "general"
+                    "question_type": "general",
+                    "return_to_previous_state": True  # 标记需要返回之前的状态
                 }
+            
+            # 如果当前是收集信息状态，检查是否可以临时切换到自由问答
+            if self.state_manager.current_state == ConversationState.COLLECTING_INFO:
+                # 检查是否已经收集了足够的信息
+                config = self.config_manager.to_dict()
+                core_info_complete = all(
+                    config.get('core_investment', {}).get(field) is not None
+                    for field in ['target_value', 'years', 'initial_investment']
+                )
+                
+                if core_info_complete:
+                    print("核心信息已收集完成，允许临时切换到自由问答")
+                    return {
+                        "primary_goal": "answer_question",
+                        "secondary_goal": "maintain_engagement",
+                        "approach": "informative",
+                        "next_action": "provide_answer",
+                        "allow_free_chat": True,
+                        "return_to_previous_state": True
+                    }
+                else:
+                    print("核心信息未收集完成，继续收集信息")
+                    return {
+                        "primary_goal": "collect_core_info",
+                        "secondary_goal": "answer_question",
+                        "approach": "informative",
+                        "next_action": "collect_and_answer",
+                        "allow_free_chat": False
+                    }
+            
+            # 其他情况下的问题处理
+            return {
+                "primary_goal": "answer_question",
+                "secondary_goal": "maintain_engagement",
+                "approach": "informative",
+                "next_action": "provide_answer",
+                "allow_free_chat": True,
+                "question_type": "general"
+            }
         
         # 如果用户提供了信息
         if analysis.get("intent") == "provide_info":
             print("检测到用户提供了新信息")
             
             # 更新信息收集进度
-            self.state_manager.update_info_collection_progress()
+            extracted_info = analysis.get("extracted_info", {})
+            if extracted_info.get("core_investment"):
+                self.state_manager.update_info_collection_progress("core_info")
+            elif extracted_info.get("portfolio"):
+                self.state_manager.update_info_collection_progress("portfolio")
+            elif any(extracted_info.get(key) for key in ["personal_info", "financial_info"]):
+                self.state_manager.update_info_collection_progress("additional_info")
+            else:
+                self.state_manager.update_info_collection_progress()  # 让状态管理器自动判断
             
             # 检查核心信息是否完整
             config = self.config_manager.to_dict()
@@ -534,20 +539,26 @@ class ConversationManager:
         print(f"用户输入: {user_input}")
         print(f"当前状态: {self.state_manager.current_state.value}")
         
-        # 优先使用规则检测
-        # 1. 明确的个人投资意图模式
+        # 1. 优先检查是否是知识咨询类问题
+        knowledge_query_pattern = r'(是什么|有哪些|怎么样|如何|什么意思|区别|推荐|介绍)'
+        investment_terms = r'(股票|基金|债券|美股|港股|理财|指数|ETF|期货|外汇|加密货币|比特币)'
+        if re.search(knowledge_query_pattern, user_input) and re.search(investment_terms, user_input):
+            print("检测到知识咨询问题，切换到自由问答状态")
+            return ConversationState.FREE_CHAT
+        
+        # 2. 检查是否是市场分析请求
+        analysis_pattern = r'(帮我*分析|分析下|看看|预测|走势)'
+        if re.search(analysis_pattern, user_input) and re.search(investment_terms, user_input):
+            print("检测到市场分析请求，切换到自由问答状态")
+            return ConversationState.FREE_CHAT
+            
+        # 3. 检查是否是个人投资相关
         personal_investment_pattern = r'(我.*(想|要|准备|计划).*(投资|理财|买入)|准备.*([0-9]+[万亿]|[0-9]+\s*年)|我的.*投资)'
         if re.search(personal_investment_pattern, user_input):
             print("检测到明确的个人投资意图，切换到信息收集状态")
             return ConversationState.COLLECTING_INFO
-            
-        # 2. 明确的咨询分析请求
-        analysis_pattern = r'(帮我*分析|怎么样|如何|分析下|看看)'
-        if re.search(analysis_pattern, user_input) and re.search(r'(股票|基金|债券|理财产品)', user_input):
-            print("检测到投资咨询请求，保持自由问答状态")
-            return ConversationState.FREE_CHAT
 
-        # 3. 其他投资相关信息，交给 LLM 进行更细致的判断
+        # 4. 其他投资相关信息，交给 LLM 进行更细致的判断
         investment_pattern = r'([0-9]+[万亿]|[0-9]+\s*年|目标|买房|理财|投资|基金|股票|债券)'
         if re.search(investment_pattern, user_input):
             print("检测到投资相关信息，需要进一步判断")
@@ -560,42 +571,28 @@ class ConversationManager:
         if context:
             context_str = "\n".join([
                 f"{msg.get('role', 'unknown')}: {msg.get('content', '')}"
-                for msg in context[-3:]  # 只取最近3轮对话
+                for msg in context[-2:]  # 只取最近1轮对话
             ])
         
         # 构建状态检测的 prompt
-        prompt = f"""作为一个专业的投资顾问助手，请分析用户的输入并判断应该进入哪个对话状态。
+        prompt = f"""分析用户输入并判断对话状态。
 
 当前状态：{self.state_manager.current_state.value}
 用户输入："{user_input}"
-
-最近的对话历史：
-{context_str}
+最近对话：{context_str}
 
 状态说明：
-1. COLLECTING_INFO（收集信息）
-   - 用户提到具体的投资目标、金额或时间
-   - 谈论个人投资需求或计划
-   - 提供个人财务信息
-   - 讨论风险承受能力
-   - 谈论投资组合配置
+COLLECTING_INFO: 用户提供个人投资信息、目标、计划
+FREE_CHAT: 咨询知识、市场分析、非个人投资话题
 
-2. FREE_CHAT（自由问答）
-   - 询问一般性的投资知识
-   - 市场分析或产品咨询
-   - 不涉及个人投资决策
-   - 闲聊或其他非投资话题
-
-重要提示：
-1. 只要用户提到个人投资相关的具体信息，就应该使用 COLLECTING_INFO
-2. 如果是纯咨询或知识探讨，使用 FREE_CHAT
-
-请返回以下 JSON 格式的分析结果：
+返回JSON：
 {{
     "target_state": "COLLECTING_INFO/FREE_CHAT",
-    "confidence": 0.1-1.0,  // 置信度，0.1-1.0
-    "reasoning": "string"    // 详细的状态判断理由
-}}"""
+    "confidence": 0.1-1.0,
+    "reasoning": "string"
+}}
+
+注意：个人投资相关用COLLECTING_INFO，一般咨询用FREE_CHAT"""
 
         try:
             print("\n调用 LLM 进行状态检测...")
@@ -615,13 +612,13 @@ class ConversationManager:
             target_state = result.get("target_state")
             confidence = result.get("confidence", 0)
             
-            # 只有当置信度超过 0.7 时才考虑转换状态
-            if confidence >= 0.7:
-                if target_state == "COLLECTING_INFO":
-                    return ConversationState.COLLECTING_INFO
-                elif target_state == "FREE_CHAT":
-                    return ConversationState.FREE_CHAT
+            # 降低转换到 COLLECTING_INFO 的门槛，提高转换到 FREE_CHAT 的灵活性
+            if target_state == "COLLECTING_INFO" and confidence >= 0.8:
+                return ConversationState.COLLECTING_INFO
+            elif target_state == "FREE_CHAT" and confidence >= 0.6:
+                return ConversationState.FREE_CHAT
             
+            # 如果置信度不够，默认保持当前状态
             return None
             
         except Exception as e:
@@ -629,68 +626,22 @@ class ConversationManager:
             return None
     
     async def generate_response(self, analysis: Dict, user_input: str) -> str:
-        """根据当前状态生成回复"""
-        print("\n=== 生成回复 ===")
-        print(f"当前状态: {self.state_manager.current_state.value}")
-        
-        # 如果是自由问答状态，使用自由问答的回复生成逻辑
-        if self.state_manager.current_state == ConversationState.FREE_CHAT:
-            return await self._generate_free_chat_response(analysis, user_input)
-        
-        # 如果是信息收集状态
-        if self.state_manager.current_state == ConversationState.COLLECTING_INFO:
-            # 检查是否是修改请求
-            modification = await self._check_modification_intent(user_input, analysis)
-            if modification:
-                field = modification.get("target_field")
-                stage = {
-                    'target_value': 'core_info',
-                    'years': 'core_info',
-                    'initial_investment': 'core_info',
-                    'portfolio': 'portfolio'
-                }.get(field)
-                
-                if stage:
-                    # 处理修改请求
-                    self._handle_modification(field, modification.get("new_value"))
-                    # 获取当前配置
-                    config = self.config_manager.to_dict()
-                    # 重新检查收集阶段
-                    current_stage = self._check_collection_stage(config, user_input)
-                    if current_stage != 'completed':
-                        next_question = self._get_next_question(current_stage, config)
-                        return f"好的，已经帮您修改了信息。{next_question}"
-                    else:
-                        return "好的，已经帮您修改了信息。您可以继续修改其他信息，或者输入'确认'进入风险评估阶段。"
-                else:
-                    return "抱歉，该信息目前无法修改。让我们继续完成信息收集。"
-
-            # 检查是否是确认进入风险评估
-            if user_input.strip() == "确认":
-                # 锁定核心信息和投资组合的修改
-                self.collection_stages['core_info']['modifiable'] = False
-                self.collection_stages['portfolio']['modifiable'] = False
-                return "好的，让我们开始风险评估。请回答以下问题..."
-
-            # 更新配置
-            if analysis.get("intent") == "provide_info":
-                self._update_config_from_analysis(analysis)
+        """根据当前状态和分析结果生成回复"""
+        try:
+            current_state = self.state_manager.current_state
+            # 使用状态处理器处理当前状态
+            if current_state in self.state_handlers:
+                return await self.state_handlers[current_state](user_input, analysis)
             
-            # 获取当前配置
-            config = self.config_manager.to_dict()
+            # 如果没有对应的处理器，返回默认响应
+            print(f"Warning: No handler found for state {current_state}")
+            return "抱歉，我现在无法处理这个请求。请问您有其他问题吗？"
             
-            # 检查当前收集阶段
-            current_stage = self._check_collection_stage(config, user_input)
-            
-            if current_stage == 'completed':
-                return "我们已经收集了所有必要的信息。您可以继续修改已填写的信息，或者输入\"确认\"进入风险评估阶段。"
-            
-            # 获取下一个问题
-            next_question = self._get_next_question(current_stage, config)
-            return next_question
-        
-        # 如果是其他状态（不应该出现）
-        return "抱歉，我现在无法确定如何回复。请告诉我您的投资需求，我会为您提供专业的建议。"
+        except Exception as e:
+            print(f"Error in generate_response: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
+            return "抱歉，处理您的请求时出现了问题。请稍后再试。"
     
     def _check_collection_stage(self, config: Dict, user_input: str = None) -> str:
         """检查当前应该收集哪个阶段的信息"""
@@ -777,32 +728,28 @@ class ConversationManager:
         )
         recent_messages = []
         if context:
-            for msg in context[-4:]:
+            for msg in context[-2:]:  # 只保留最近1轮对话
                 if msg["role"] == "user":
                     recent_messages.append(f"用户: {msg['content']}")
                 else:
                     recent_messages.append(f"助手: {msg['content']}")
         
-        context_str = "\n".join(recent_messages) if recent_messages else "无历史对话"
+        context_str = "\n".join(recent_messages) if recent_messages else ""
         
         # 构建精简的 prompt
-        base_prompt = """作为专业的投资顾问，请回答用户的问题。
+        prompt = f"""作为投资顾问回答问题。
 
-用户问题：{}
+问题：{user_input}
+{f'最近对话：{context_str}' if context_str else ''}
 
-回答要求：
-1. 保持专业性，但使用通俗易懂的语言
-2. 回答要简洁，控制在200字以内
-3. 如果涉及具体数字，要说明数据来源
-4. 如果是投资建议，要说明风险提示
-5. 如果用户提到个人投资需求，建议切换到信息收集模式
+要求：
+1. 专业但通俗易懂
+2. 控制在200字内
+3. 数据需说明来源
+4. 投资建议需提示风险
+5. 个人投资需求建议收集信息
 
-{}
-
-请直接给出回答，不要重复问题。"""
-        
-        context_part = f"最近的相关对话：\n{context_str}" if recent_messages else ""
-        prompt = base_prompt.format(user_input, context_part)
+直接回答，不要重复问题。"""
 
         try:
             response = await LLMUtils.call_llm(
@@ -962,3 +909,117 @@ class ConversationManager:
             print("错误堆栈:")
             import traceback
             print(traceback.format_exc())
+
+    async def _handle_initializing_state(self, user_input: str, analysis: Dict) -> str:
+        """处理初始化状态"""
+        # 检查是否是知识咨询
+        if analysis.get("intent") == "ask_question":
+            self.state_manager.transition_to(ConversationState.FREE_CHAT)
+            return await self._generate_free_chat_response(analysis, user_input)
+        # 检查是否提供了投资相关信息
+        if analysis.get("intent") == "provide_info":
+            self.state_manager.transition_to(ConversationState.COLLECTING_INFO)
+            return await self._handle_collecting_info_state(user_input, analysis)
+        # 默认转到自由问答
+        self.state_manager.transition_to(ConversationState.FREE_CHAT)
+        return "您好！我是GLAD智能投顾助手。请问有什么可以帮您？"
+        
+    async def _handle_collecting_info_state(self, user_input: str, analysis: Dict) -> str:
+        """处理信息收集状态"""
+        # 如果是纯知识咨询问题，临时切换到自由问答
+        if analysis.get("intent") == "ask_question" and \
+           analysis.get("question_info", {}).get("type") == "general_inquiry":
+            response = await self._generate_free_chat_response(analysis, user_input)
+            # 获取下一个收集阶段的问题
+            next_question = self._get_next_question(
+                self._check_collection_stage(self.config_manager.to_dict()),
+                self.config_manager.to_dict()
+            )
+            if next_question:
+                response += "\n\n让我们继续之前的话题。" + next_question
+            return response
+            
+        # 处理信息收集
+        return await self._process_info_collection(user_input, analysis)
+        
+    async def _process_info_collection(self, user_input: str, analysis: Dict) -> str:
+        """处理信息收集状态下的具体逻辑"""
+        # 检查是否是修改请求
+        modification = await self._check_modification_intent(user_input, analysis)
+        if modification:
+            field = modification.get("target_field")
+            stage = {
+                'target_value': 'core_info',
+                'years': 'core_info',
+                'initial_investment': 'core_info',
+                'portfolio': 'portfolio'
+            }.get(field)
+            
+            if stage:
+                # 处理修改请求
+                self._handle_modification(field, modification.get("new_value"))
+                # 获取当前配置
+                config = self.config_manager.to_dict()
+                # 重新检查收集阶段
+                current_stage = self._check_collection_stage(config)
+                if current_stage != 'completed':
+                    next_question = self._get_next_question(current_stage, config)
+                    return f"好的，已经帮您修改了信息。{next_question}"
+                else:
+                    return "好的，已经帮您修改了信息。您可以继续修改其他信息，或者输入'确认'进入风险评估阶段。"
+            else:
+                return "抱歉，该信息目前无法修改。让我们继续完成信息收集。"
+
+        # 检查是否是确认进入风险评估
+        if user_input.strip() == "确认":
+            # 检查是否已完成必要信息收集
+            config = self.config_manager.to_dict()
+            current_stage = self._check_collection_stage(config)
+            if current_stage == 'completed':
+                # 锁定核心信息和投资组合的修改
+                self.collection_stages['core_info']['modifiable'] = False
+                self.collection_stages['portfolio']['modifiable'] = False
+                # 转换到风险评估状态
+                self.state_manager.transition_to(ConversationState.RISK_ASSESSMENT)
+                return "好的，让我们开始风险评估。请回答以下问题..."
+            else:
+                return "在进入风险评估之前，我们需要先完成必要信息的收集。"
+
+        # 更新配置
+        if analysis.get("intent") == "provide_info":
+            self._update_config_from_analysis(analysis)
+            # 更新信息收集进度
+            self.state_manager.update_info_collection_progress()
+        
+        # 获取当前配置
+        config = self.config_manager.to_dict()
+        
+        # 检查当前收集阶段
+        current_stage = self._check_collection_stage(config)
+        
+        if current_stage == 'completed':
+            return "我们已经收集了所有必要的信息。您可以继续修改已填写的信息，或者输入\"确认\"进入风险评估阶段。"
+        
+        # 获取下一个问题
+        next_question = self._get_next_question(current_stage, config)
+        return next_question
+        
+    async def _handle_free_chat_state(self, user_input: str, analysis: Dict) -> str:
+        """处理自由问答状态"""
+        # 如果检测到需要收集信息，切换到收集状态
+        if analysis.get("intent") == "provide_info" and \
+           analysis.get("extracted_info", {}).get("core_investment"):
+            self.state_manager.transition_to(ConversationState.COLLECTING_INFO)
+            return await self._handle_collecting_info_state(user_input, analysis)
+        # 继续自由问答
+        return await self._generate_free_chat_response(analysis, user_input)
+        
+    async def _handle_risk_assessment_state(self, user_input: str, analysis: Dict) -> str:
+        """处理风险评估状态"""
+        # TODO: 实现风险评估逻辑
+        pass
+        
+    async def _handle_portfolio_planning_state(self, user_input: str, analysis: Dict) -> str:
+        """处理投资组合规划状态"""
+        # TODO: 实现投资组合规划逻辑
+        pass
